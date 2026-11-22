@@ -1,9 +1,13 @@
 name: Low-fuel alert
 
+# Each run stays on for ~5.5 hours and checks every 5 minutes inside that time.
+# GitHub is asked to start a run every 30 minutes; while one is running, the next one waits
+# in line (concurrency) and takes over as soon as the previous one ends. So even when GitHub's
+# scheduler is late, there is always a run checking the trucks.
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes (GitHub may delay runs by a few minutes)
-  workflow_dispatch: {}      # "Run workflow" button for testing
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}      # "Run workflow" button
 
 concurrency:
   group: fuel-alert
@@ -12,7 +16,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +29,7 @@ jobs:
           pip install playwright
           python -m playwright install --with-deps chromium
 
-      # Remembers which trucks were already alerted, so the group isn't spammed.
+      # Remembers which trucks were already alerted, so the groups aren't spammed.
       - name: Restore alert memory
         uses: actions/cache/restore@v4
         with:
@@ -33,10 +37,13 @@ jobs:
           key: fuel-state-${{ github.run_id }}
           restore-keys: fuel-state-
 
-      - name: Check fuel levels
+      - name: Check fuel levels every 5 minutes (~5.5 hours)
+        timeout-minutes: 340
         env:
           DATA_SOURCE: fleetgo
-          SAVE_SESSION: "0"   # never store the FleetGO login token on GitHub
+          # Login is kept only on this temporary GitHub machine for the run, never saved to the repo
+          SAVE_SESSION: "1"
+          CHECK_EVERY_MINUTES: "5"
           FLEETGO_EMAIL: ${{ secrets.FLEETGO_EMAIL }}
           FLEETGO_PASSWORD: ${{ secrets.FLEETGO_PASSWORD }}
           MOTIVE_API_KEY: ${{ secrets.MOTIVE_API_KEY }}
@@ -46,7 +53,7 @@ jobs:
           FLEETGO_URL: ${{ vars.FLEETGO_URL }}
           FLEETGO_COMPANY_ID: ${{ vars.FLEETGO_COMPANY_ID }}
           IGNORE_UNITS: ${{ vars.IGNORE_UNITS }}
-        run: python fuel_alert_bot.py
+        run: python fuel_alert_bot.py --loop --max-minutes 330
 
       - name: Save alert memory
         if: always()
