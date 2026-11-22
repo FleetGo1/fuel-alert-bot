@@ -1,0 +1,56 @@
+name: Low-fuel alert
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes (GitHub may delay runs by a few minutes)
+  workflow_dispatch: {}      # "Run workflow" button for testing
+
+concurrency:
+  group: fuel-alert
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install headless browser
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      # Remembers which trucks were already alerted, so the group isn't spammed.
+      - name: Restore alert memory
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: fuel-state-${{ github.run_id }}
+          restore-keys: fuel-state-
+
+      - name: Check fuel levels
+        env:
+          DATA_SOURCE: fleetgo
+          SAVE_SESSION: "0"   # never store the FleetGO login token on GitHub
+          FLEETGO_EMAIL: ${{ secrets.FLEETGO_EMAIL }}
+          FLEETGO_PASSWORD: ${{ secrets.FLEETGO_PASSWORD }}
+          MOTIVE_API_KEY: ${{ secrets.MOTIVE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MONITOR_TAGS: ${{ vars.MONITOR_TAGS }}
+          FLEETGO_URL: ${{ vars.FLEETGO_URL }}
+          FLEETGO_COMPANY_ID: ${{ vars.FLEETGO_COMPANY_ID }}
+          IGNORE_UNITS: ${{ vars.IGNORE_UNITS }}
+        run: python fuel_alert_bot.py
+
+      - name: Save alert memory
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: fuel-state-${{ github.run_id }}
