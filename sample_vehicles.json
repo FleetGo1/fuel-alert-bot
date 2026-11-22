@@ -1,0 +1,16 @@
+{
+  "vehicles": [
+    {"vehicle": {"id": 1, "number": "868", "current_driver": {"first_name": "ANTHONY", "last_name": "MERRIQUE"},
+      "current_location": {"lat": 25.968, "lon": -80.245, "description": "1.8 mi N of Miami Gardens, FL", "located_at": "2099-01-01T00:00:00Z", "fuel_primary_remaining_percentage": 17}}},
+    {"vehicle": {"id": 2, "number": "2304", "current_driver": null,
+      "current_location": {"lat": 35.36, "lon": -96.89, "description": "5.3 mi NE of Shawnee, OK", "located_at": "2099-01-01T00:00:00Z", "fuel_primary_remaining_percentage": 29}}},
+    {"vehicle": {"id": 3, "number": "4373", "current_driver": {"first_name": "Jessica", "last_name": "Lachae"},
+      "current_location": {"lat": 39.68, "lon": -86.61, "description": "5.5 mi W of Clayton, IN", "located_at": "2099-01-01T00:00:00Z", "fuel_primary_remaining_percentage": 36}}},
+    {"vehicle": {"id": 4, "number": "20496", "current_driver": null,
+      "current_location": {"lat": 37.61, "lon": -121.25, "description": "7.3 mi NW of Westley, CA", "located_at": "2099-01-01T00:00:00Z", "fuel_primary_remaining_percentage": 24}}},
+    {"vehicle": {"id": 5, "number": "760", "current_driver": null,
+      "current_location": {"lat": 37.25, "lon": -93.35, "description": "6.5 mi NW of Springfield, MO", "located_at": "2099-01-01T00:00:00Z", "fuel_primary_remaining_percentage": 90}}},
+    {"vehicle": {"id": 6, "number": "2602", "current_driver": null,
+      "current_location": {"lat": 29.36, "lon": -100.89, "description": "Del Rio, TX", "located_at": "2026-06-01T00:00:00Z", "fuel_primary_remaining_percentage": 10}}}
+  ]
+}
