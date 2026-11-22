@@ -15,6 +15,7 @@ Only the Python standard library is used - nothing to install.
 Usage:
     python fuel_alert_bot.py              # check once (for GitHub Actions / cron)
     python fuel_alert_bot.py --loop       # keep running, check every CHECK_EVERY_MINUTES
+    python fuel_alert_bot.py --loop --max-minutes 330   # GitHub: run ~5.5 h, then the next run takes over
     python fuel_alert_bot.py --dry-run    # print messages instead of sending
     python fuel_alert_bot.py --sample sample_vehicles.json --dry-run   # test without Motive
     python fuel_alert_bot.py --get-chat-id   # show the Telegram group id after you add the bot
@@ -549,6 +550,8 @@ def test_telegram(s):
 def main():
     p = argparse.ArgumentParser(description="FleetGO low-fuel alert bot")
     p.add_argument("--loop", action="store_true", help="keep running")
+    p.add_argument("--max-minutes", type=float, default=0,
+                   help="with --loop: stop after this many minutes (used on GitHub, max job time is 6 h)")
     p.add_argument("--dry-run", action="store_true", help="print instead of sending to Telegram")
     p.add_argument("--sample", help="read vehicles from a JSON file instead of Motive")
     p.add_argument("--get-chat-id", action="store_true", help="show Telegram chat ids the bot can see")
@@ -567,7 +570,10 @@ def main():
     if not args.dry_run and s.alert_mode == "separate" and not s.telegram_chat_id:
         raise SystemExit("ALERT_MODE=separate needs TELEGRAM_CHAT_ID (the monitoring group).")
 
+    started = time.monotonic()
+    limit = args.max_minutes * 60 if args.max_minutes else None
     while True:
+        check_start = time.monotonic()
         try:
             run(s, args)
         except Exception as exc:  # keep the loop alive on network hiccups
@@ -576,7 +582,12 @@ def main():
                 raise
         if not args.loop:
             break
-        time.sleep(s.check_every * 60)
+        # next check CHECK_EVERY_MINUTES after this one started (not after it finished)
+        wait = max(0.0, s.check_every * 60 - (time.monotonic() - check_start))
+        if limit is not None and time.monotonic() - started + wait > limit:
+            print(f"Loop time limit ({args.max_minutes:.0f} min) reached - stopping; the next run takes over.")
+            break
+        time.sleep(wait)
 
 
 if __name__ == "__main__":

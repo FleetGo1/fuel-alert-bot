@@ -148,7 +148,11 @@ switched off without touching your account. You type the email/password only int
      `IGNORE_UNITS` = e.g. `2602,2026` (trucks in the shop; optional)
 5. Go to **Actions → Low-fuel alert → Run workflow** to test it now.
 
-From then on it runs by itself every 5 minutes (GitHub sometimes runs a few minutes late).
+From then on it runs by itself. Each GitHub run stays on for ~5.5 hours and checks every
+5 minutes; GitHub is asked to start a run every 30 minutes, and while one is running the next
+waits in line and takes over when it ends. (GitHub's own 5-minute schedule is often late, so the
+bot doesn't depend on it.) You'll see many "cancelled" waiting runs in the Actions list - that's
+normal. "Run workflow" by hand also waits in line while a run is active.
 
 > GitHub pauses scheduled jobs in a public repo after **60 days with no commits**. It emails you first;
 > just click "Enable workflow" again, or make a small edit to the README every month.
