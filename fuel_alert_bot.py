@@ -73,7 +73,10 @@ class Settings:
         self.motive_api_key = env("MOTIVE_API_KEY")
         self.motive_oauth_token = env("MOTIVE_OAUTH_TOKEN")
         self.motive_base = env("MOTIVE_BASE_URL", "https://api.gomotive.com")
-        self.telegram_token = env("TELEGRAM_BOT_TOKEN")
+        # Pick the real token out of whatever was pasted (extra spaces, "token:" text, etc.)
+        raw_token = env("TELEGRAM_BOT_TOKEN") or ""
+        m = re.search(r"\d{6,12}:[A-Za-z0-9_-]{30,}", raw_token)
+        self.telegram_token = m.group(0) if m else (raw_token.strip() or None)
         self.telegram_chat_id = env("TELEGRAM_CHAT_ID")
         # Telegram usernames to tag, e.g. "@ali_fleetgo @monitoring_night"
         self.monitor_tags = env("MONITOR_TAGS", "")
@@ -298,10 +301,16 @@ def load_state(path):
         return {}
     if state and "trucks" not in state and "hv" not in state:   # old format: {unit: {...}}
         state = {"trucks": state}
+    if state.get("v") != STATE_VERSION:
+        state.pop("trucks", None)   # older versions could mark alerts that were never delivered
     return state
 
 
+STATE_VERSION = 2
+
+
 def save_state(path, state):
+    state["v"] = STATE_VERSION
     with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=1)
 
@@ -369,11 +378,13 @@ def check_once(s, state, trucks, dry_run=False, now=None):
         new_level = LEVELS[level] > LEVELS[prev["level"]]
         remind = level == "critical" and now.timestamp() - prev["last_alert"] >= s.remind_minutes * 60
         if new_level or remind:
-            sent += notify(s, driver_chat,
-                           build_message(s, truck, level, reminder=not new_level, nonstop=nonstop),
-                           build_driver_message(s, truck, level, nonstop=nonstop),
-                           level in ("tag", "critical"), dry_run)
-            alerts[unit] = {"level": level, "last_alert": now.timestamp()}
+            delivered = notify(s, driver_chat,
+                               build_message(s, truck, level, reminder=not new_level, nonstop=nonstop),
+                               build_driver_message(s, truck, level, nonstop=nonstop),
+                               level in ("tag", "critical"), dry_run)
+            if delivered:   # only remember alerts that actually went somewhere
+                alerts[unit] = {"level": level, "last_alert": now.timestamp()}
+                sent += 1
     return sent
 
 
@@ -398,6 +409,10 @@ def run(s, args):
             print("Reading driver groups failed:", exc, file=sys.stderr)
     sent = check_once(s, state, trucks, dry_run=args.dry_run)
     save_state(s.state_file, state)
+    linked = len(driver_chats(state))
+    token_ok = bool(s.telegram_token and re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{30,}", s.telegram_token))
+    print(f"Telegram token format: {'OK' if token_ok else 'NOT RECOGNIZED - re-paste the secret'} | "
+          f"driver groups linked: {linked}")
     # Keep logs free of unit/driver details (logs may be public on GitHub).
     print(f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC: checked {len(trucks)} trucks, sent {sent} alert(s)")
 
