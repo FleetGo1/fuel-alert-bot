@@ -165,6 +165,8 @@ def process_messages(s, state, messages, units, geocoder=geocode):
         if trip:
             g["last_trip"] = trip
             g["last_trip_at"] = m["date"]
+            from trips import start_trip      # every load is tracked (black-state warnings)
+            start_trip(state, unit, trip, m["date"], geocoder)
             if is_hv(text) or m["date"] - g.get("last_hv_at", 0) <= LINK_WINDOW:
                 start_hv(state, unit, trip, m["date"], geocoder)
             continue

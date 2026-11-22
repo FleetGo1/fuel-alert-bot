@@ -13,9 +13,22 @@ The people tagged are set in the `MONITOR_TAGS` variable.
 | 25% or less | 🔴 URGENT alert + tag, **repeated every 60 min** until fueled |
 | back to 50%+ | ✅ "Unit X refueled" and the truck is reset |
 
-Each alert includes the driver, location, a **"Plan fuel from here"** link to the FleetGO planner,
-the fuel-card chains (TA, Love's, Pilot, Flying J), and a ⛔ warning when the truck is in a
-never-fuel state (CA, MA, NH, OR, WA). Every truck gets each alert only once. Trucks with GPS data older
+Each alert includes the **estimated range** (fuel % × 150 gal × 6.5 mpg, e.g. 36% ≈ 351 mi, and how far
+until the 10% reserve) and a ⛔ warning when the truck is in a black state (CA, MA, NH, OR, WA).
+
+### Possible fuel theft
+Every check compares the fuel drop with the miles actually driven (1 gal ≈ 6.5 mi). If fuel fell
+**10+ % points more than driving explains** (e.g. 62% → 41% while parked) and the next reading
+confirms it, the bot sends 🚨 **POSSIBLE FUEL THEFT** with the gallons lost and location, and tags
+monitoring. Theft alerts go **only** to the private monitoring group (`TELEGRAM_CHAT_ID`), never to
+the driver group (if `TELEGRAM_CHAT_ID` is not set, they fall back to the driver group). That group
+gets nothing else unless `FALLBACK_TO_MONITORING=1`.
+
+### Black states ahead
+Every load message (`🚛 NEW TRIP ... HAS BEEN ASSIGNED`) is tracked stop by stop. When the truck's
+**next stop is in a black state**, the truck is in a **neighboring state** (or within 300 mi of the stop)
+and fuel is **below 85%**, the bot tags monitoring: "⛔ Unit X is heading to CA (black state) – fill up
+before entering CA". If fuel is still low an hour later, it sends a 🔴 reminder (max 2). Every truck gets each alert only once. Trucks with GPS data older
 than 3 hours are skipped.
 
 Example:

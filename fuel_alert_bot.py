@@ -102,6 +102,9 @@ class Settings:
         #   driver_groups = one message in the driver's group, tagging MONITOR_TAGS there (default)
         #   separate      = tagged alert to TELEGRAM_CHAT_ID (monitoring group) + plain message to driver
         self.alert_mode = env("ALERT_MODE", "driver_groups").lower()
+        # driver_groups mode: send alerts of trucks without a linked group to TELEGRAM_CHAT_ID?
+        # Off by default - that group only gets theft alerts.
+        self.fallback_to_monitoring = env("FALLBACK_TO_MONITORING", "0") == "1"
         # (separate mode only) also post the plain message in each driver's own group
         self.driver_alerts = env("DRIVER_ALERTS", "1") == "1"
         self.hv_min_fuel = env_num("HV_MIN_FUEL_PERCENT", 75)       # before pickup
@@ -112,6 +115,16 @@ class Settings:
         self.reserve_pct = env_num("RESERVE_PERCENT", 10)
         self.stop_move_miles = env_num("STOP_MOVE_MILES", 0.3)      # moved less than this = standing
         self.stop_checks = int(env_num("STOP_CHECKS", 2))           # 2 checks x 5 min = ~10 min stopped
+
+        # Black states: warn before the truck drives into one
+        self.black_min_fuel = env_num("BLACK_MIN_FUEL_PERCENT", 85)  # warn if below this
+        self.black_warn_miles = env_num("BLACK_WARN_MILES", 300)     # ...within this distance of the stop
+        self.black_remind_minutes = env_num("BLACK_REMIND_MINUTES", 60)  # remind if still low...
+        self.black_reminders = int(env_num("BLACK_REMINDERS", 2))        # ...at most this many times
+
+        # Sudden fuel drop (possible theft): % points lost beyond what driving explains
+        self.theft_drop_pct = env_num("THEFT_DROP_PERCENT", 10)
+        self.theft_confirm = env("THEFT_CONFIRM", "1") == "1"   # wait for a 2nd reading first
 
 
 # ------------------------------------------------------------------ motive ---
@@ -252,8 +265,9 @@ def build_message(s, truck, level, reminder=False, nonstop=None):
     if truck["driver"]:
         lines.append(f"👤 {e(truck['driver'])}")
     lines.append(f"📍 {e(truck['place'])}")
+    lines.append(range_line(s, truck["fuel"]))
     if truck["state"] in s.never_fuel_states:
-        lines.append(f"⛔ In {truck['state']} (never-fuel state): buy only enough to leave the state.")
+        lines.append(f"⛔ In {truck['state']} (black state): buy only enough to leave the state.")
     if nonstop:
         lines.append(f"🛑 HV load: NO STOP – about {nonstop['miles_left']:.0f} mi of nonstop driving left. "
                      f"Fuel only after that.")
@@ -263,28 +277,40 @@ def build_message(s, truck, level, reminder=False, nonstop=None):
     return "\n".join(lines)
 
 
+def range_miles(s, fuel_pct):
+    """(miles until empty, miles until the safety reserve) for a fuel percentage."""
+    total = fuel_pct / 100 * s.tank_gallons * s.mpg
+    usable = max(0.0, (fuel_pct - s.reserve_pct) / 100 * s.tank_gallons * s.mpg)
+    return total, usable
+
+
+def range_line(s, fuel_pct):
+    total, usable = range_miles(s, fuel_pct)
+    return f"📏 Range: about <b>{total:.0f} mi</b> left – plan to fuel within ~{usable:.0f} mi."
+
+
 def build_driver_message(s, truck, level, nonstop=None):
     """Short, direct message for the driver's own group (no tags, no internal links)."""
     e = html.escape
     fuel = f"{truck['fuel']:.0f}%"
     unit = f"Unit {e(truck['unit'])} – "
-    chains = e(s.fuel_card_chains)
     if nonstop:
         lines = [f"{'🔴' if level == 'critical' else '🟠' if level == 'tag' else '🟡'} "
                  f"<b>{unit}fuel is {fuel}.</b>",
+                 range_line(s, truck["fuel"]),
                  f"🛑 HIGH-VALUE LOAD: do NOT stop yet – about {nonstop['miles_left']:.0f} mi of nonstop "
                  f"driving left. The monitoring team will contact you about fuel."]
         return "\n".join(lines)
     if level == "critical":
-        lines = [f"🔴 <b>URGENT: {unit}fuel is {fuel}.</b>", f"⛽ Fuel at the nearest {chains} now."]
+        lines = [f"🔴 <b>URGENT: {unit}fuel is {fuel}.</b>", range_line(s, truck["fuel"]),
+                 "⛽ Fuel at the nearest truck stop now."]
     elif level == "tag":
-        lines = [f"🟠 <b>Low fuel: {unit}{fuel}.</b>",
-                 f"⛽ Please fuel at the next {chains} and send us the location."]
+        lines = [f"🟠 <b>Low fuel: {unit}{fuel}.</b>", range_line(s, truck["fuel"]),
+                 "⛽ Please fuel at the next truck stop and send us the location."]
     else:
-        lines = [f"🟡 {unit}fuel is {fuel}. Please plan your next fuel stop."]
+        lines = [f"🟡 {unit}fuel is {fuel}. Please plan your next fuel stop.", range_line(s, truck["fuel"])]
     if truck["state"] in s.never_fuel_states:
-        lines.append(f"⛔ You are in {truck['state']}: buy only enough fuel to leave the state.")
-    lines.append(f"💳 Use the fuel card at {chains} for the discount.")
+        lines.append(f"⛔ You are in {truck['state']} (black state): buy only enough fuel to leave the state.")
     return "\n".join(lines)
 
 
@@ -315,15 +341,22 @@ def save_state(path, state):
         json.dump(state, f, indent=1)
 
 
-def notify(s, driver_chat, monitor_text, driver_text, tag, dry_run):
-    """Deliver one alert according to ALERT_MODE. Returns True if something was sent."""
+def notify(s, driver_chat, monitor_text, driver_text, tag, dry_run, private=False):
+    """Deliver one alert according to ALERT_MODE. Returns True if something was sent.
+
+    private=True (theft alerts): goes to the monitoring group if TELEGRAM_CHAT_ID is set,
+    otherwise to the driver group (the only place the monitoring team is).
+    """
     tag_line = f"\n🔔 {html.escape(s.monitor_tags)}" if tag and s.monitor_tags else ""
+    if private and s.telegram_chat_id:
+        send_telegram(s, monitor_text + tag_line, dry_run)
+        return True
     if s.alert_mode == "driver_groups":
         # One message in the driver's group (monitoring team is a member there and gets tagged)
         if driver_chat:
             send_telegram(s, (driver_text or monitor_text) + tag_line, dry_run, chat_id=driver_chat)
             return True
-        if s.telegram_chat_id:   # truck has no linked group yet -> fallback group
+        if s.telegram_chat_id and s.fallback_to_monitoring:   # truck has no linked group yet
             send_telegram(s, monitor_text + tag_line, dry_run)
             return True
         return False
@@ -337,6 +370,8 @@ def notify(s, driver_chat, monitor_text, driver_text, tag, dry_run):
 
 def check_once(s, state, trucks, dry_run=False, now=None):
     from hv_loads import hv_check
+    from trips import trip_check
+    from theft import theft_check
 
     now = now or datetime.now(timezone.utc)
     alerts = state.setdefault("trucks", {})
@@ -351,9 +386,22 @@ def check_once(s, state, trucks, dry_run=False, now=None):
         if truck["located_at"] and (now - truck["located_at"]).total_seconds() > s.stale_hours * 3600:
             continue  # GPS/fuel data too old to trust
 
+        driver_chat = chats.get(unit)
+
+        # Sudden fuel drop that driving can't explain -> possible theft
+        for kind, text, _ in theft_check(s, state, truck, now.timestamp()):
+            if truck["driver"]:
+                text += f"\n👤 {html.escape(truck['driver'])}"
+            sent += notify(s, driver_chat, text, None, True, dry_run, private=True)
+
+        # Black state ahead on the current load -> fuel before entering
+        for kind, text, driver_text in trip_check(s, state, truck, now.timestamp()):
+            if truck["driver"]:
+                text += f"\n👤 {html.escape(truck['driver'])}"
+            sent += notify(s, driver_chat, text, driver_text, kind == "tag", dry_run)
+
         # High-value load rules (75% before pickup, 300 mi nonstop after)
         hv_msgs, nonstop = hv_check(s, state, truck, now.timestamp())
-        driver_chat = chats.get(unit)
         for kind, text, driver_text in hv_msgs:
             if truck["driver"]:
                 text += f"\n👤 {html.escape(truck['driver'])}"
