@@ -37,7 +37,9 @@ def theft_check(s, state, truck, now_ts):
         return []            # no new reading since last time
 
     moved = miles_between(base["lat"], base["lon"], cur["lat"], cur["lon"]) * 1.2
-    burn = moved / s.mpg / s.tank_gallons * 100          # % that driving explains
+    # % that driving explains - generous (worst-case MPG) so hills/heavy loads never look like theft
+    worst_mpg = min(truck.get("mpg") or s.mpg, s.mpg) * s.hard_road_factor
+    burn = moved / worst_mpg / s.tank_gallons * 100
     unexplained = (base["fuel"] - cur["fuel"]) - burn
 
     if unexplained < s.theft_drop_pct:

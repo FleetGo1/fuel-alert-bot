@@ -131,6 +131,15 @@ def fetch_group_messages(s, state):
     return messages
 
 
+def driver_type(text):
+    """'2304 Scotty (C/D)' -> 'C/D'. Company driver C/D, owner-operator O/O, lease operator L/O."""
+    m = re.search(r"\b([CLO])\s*/\s*([DO])\b", (text or "").upper())
+    if not m:
+        return None
+    value = f"{m.group(1)}/{m.group(2)}"
+    return value if value in ("C/D", "O/O", "L/O") else None
+
+
 def unit_for_group(title, units):
     """Find a fleet unit number inside a group title, e.g. 'Unit 2304 - Scotty' -> '2304'."""
     tokens = re.findall(r"[A-Za-z]?\d+", title or "")
@@ -150,11 +159,16 @@ def process_messages(s, state, messages, units, geocoder=geocode):
         g = groups.setdefault(m["chat_id"], {})
         g["title"] = m["title"]
         text = m["text"]
+        dtype = driver_type(m["title"])
+        if dtype:
+            g["type"] = dtype
 
-        # Manual link: "/unit 2304" typed in a driver group
-        cmd = re.match(r"^/unit(?:@\w+)?\s+(\S+)", text.strip(), re.I)
+        # Manual link: "/unit 2304" or "/unit 2304 C/D" typed in a driver group
+        cmd = re.match(r"^/unit(?:@\w+)?\s+(\S+)(.*)$", text.strip(), re.I)
         if cmd:
             g["unit"] = cmd.group(1)
+            if driver_type(cmd.group(2)):
+                g["type"] = driver_type(cmd.group(2))
             continue
         unit = g.get("unit") or unit_for_group(m["title"], units)
         if not unit:
@@ -201,7 +215,8 @@ def start_hv(state, unit, trip, when, geocoder):
 # ---------------------------------------------------------- HV truck check ---
 
 def fuel_needed_pct(s, miles):
-    return miles / s.mpg / s.tank_gallons * 100
+    # conservative: assume a hard road (hills / heavy load) so the truck never runs short
+    return miles / (s.mpg * s.hard_road_factor) / s.tank_gallons * 100
 
 
 def hv_check(s, state, truck, now_ts):

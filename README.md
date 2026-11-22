@@ -13,8 +13,17 @@ The people tagged are set in the `MONITOR_TAGS` variable.
 | 25% or less | 🔴 URGENT alert + tag, **repeated every 60 min** until fueled |
 | back to 50%+ | ✅ "Unit X refueled" and the truck is reset |
 
-Each alert includes the **estimated range** (fuel % × 150 gal × 6.5 mpg, e.g. 36% ≈ 351 mi, and how far
-until the 10% reserve) and a ⛔ warning when the truck is in a black state (CA, MA, NH, OR, WA).
+Each alert includes the **estimated range** as low–high miles. The bot **learns each truck's real MPG**
+from its own GPS miles and fuel used (after ~30 gal burned; hills, heavy loads and driving style are
+included). Until then it uses 6.5 mpg. The low end assumes 15% worse MPG (`HARD_ROAD_FACTOR=0.85`),
+and "fuel within" keeps a 10% reserve on top of that and a ⛔ warning when the truck is in a black state (CA, MA, NH, OR, WA).
+
+### Company drivers only
+Fuel alerts (low fuel, black state, theft) go only to **company drivers**. The bot reads the driver
+type from the group name: `(C/D)` company driver, `(O/O)` owner-operator, `(L/O)` lease operator,
+e.g. "2304 Scotty (C/D)". You can also type `/unit 2304 C/D` in the group. O/O and L/O groups get
+no fuel alerts (they buy their own fuel) but still get HV load rules. Groups with no type in the
+name still get fuel alerts, so no truck is missed (`ALERT_UNKNOWN_TYPE=0` turns that off).
 
 ### Possible fuel theft
 Every check compares the fuel drop with the miles actually driven (1 gal ≈ 6.5 mi). If fuel fell

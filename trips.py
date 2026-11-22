@@ -102,7 +102,8 @@ def trip_check(s, state, truck, now_ts):
 
     e = html.escape
     key = f"{t['trip']}:{nxt['name']}"
-    total = truck["fuel"] / 100 * s.tank_gallons * s.mpg
+    # conservative range: the truck's own MPG (if learned) on a hard road
+    total = truck["fuel"] / 100 * s.tank_gallons * (truck.get("mpg") or s.mpg) * s.hard_road_factor
     dist_txt = f", ~{dist:.0f} mi to the stop" if dist is not None else ""
     msgs = []
     warned = t.setdefault("warned", {})          # key -> [first_ts, last_ts, reminders]
