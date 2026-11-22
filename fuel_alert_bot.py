@@ -95,7 +95,11 @@ class Settings:
 
         # High-value loads (read from the drivers' Telegram groups)
         self.read_driver_groups = env("READ_DRIVER_GROUPS", "1") == "1"
-        # Also post fuel/HV alerts in each driver's own group
+        # Where alerts go:
+        #   driver_groups = one message in the driver's group, tagging MONITOR_TAGS there (default)
+        #   separate      = tagged alert to TELEGRAM_CHAT_ID (monitoring group) + plain message to driver
+        self.alert_mode = env("ALERT_MODE", "driver_groups").lower()
+        # (separate mode only) also post the plain message in each driver's own group
         self.driver_alerts = env("DRIVER_ALERTS", "1") == "1"
         self.hv_min_fuel = env_num("HV_MIN_FUEL_PERCENT", 75)       # before pickup
         self.hv_nonstop_miles = env_num("HV_NONSTOP_MILES", 300)    # after pickup
@@ -253,8 +257,6 @@ def build_message(s, truck, level, reminder=False, nonstop=None):
     lines.append(f"💳 Fuel card discount: {e(s.fuel_card_chains)}")
     if truck["lat"] is not None and truck["lon"] is not None and not nonstop:
         lines.append(f'⛽ <a href="{e(planner_link(s, truck))}">Plan fuel from here</a>')
-    if level in ("tag", "critical") and s.monitor_tags:
-        lines.append(f"🔔 {e(s.monitor_tags)}")
     return "\n".join(lines)
 
 
@@ -262,19 +264,21 @@ def build_driver_message(s, truck, level, nonstop=None):
     """Short, direct message for the driver's own group (no tags, no internal links)."""
     e = html.escape
     fuel = f"{truck['fuel']:.0f}%"
+    unit = f"Unit {e(truck['unit'])} – "
     chains = e(s.fuel_card_chains)
     if nonstop:
         lines = [f"{'🔴' if level == 'critical' else '🟠' if level == 'tag' else '🟡'} "
-                 f"<b>Fuel is {fuel}.</b>",
+                 f"<b>{unit}fuel is {fuel}.</b>",
                  f"🛑 HIGH-VALUE LOAD: do NOT stop yet – about {nonstop['miles_left']:.0f} mi of nonstop "
                  f"driving left. The monitoring team will contact you about fuel."]
         return "\n".join(lines)
     if level == "critical":
-        lines = [f"🔴 <b>URGENT: fuel is {fuel}.</b>", f"⛽ Fuel at the nearest {chains} now."]
+        lines = [f"🔴 <b>URGENT: {unit}fuel is {fuel}.</b>", f"⛽ Fuel at the nearest {chains} now."]
     elif level == "tag":
-        lines = [f"🟠 <b>Low fuel: {fuel}.</b>", f"⛽ Please fuel at the next {chains} and send us the location."]
+        lines = [f"🟠 <b>Low fuel: {unit}{fuel}.</b>",
+                 f"⛽ Please fuel at the next {chains} and send us the location."]
     else:
-        lines = [f"🟡 Fuel is {fuel}. Please plan your next fuel stop."]
+        lines = [f"🟡 {unit}fuel is {fuel}. Please plan your next fuel stop."]
     if truck["state"] in s.never_fuel_states:
         lines.append(f"⛔ You are in {truck['state']}: buy only enough fuel to leave the state.")
     lines.append(f"💳 Use the fuel card at {chains} for the discount.")
@@ -302,12 +306,32 @@ def save_state(path, state):
         json.dump(state, f, indent=1)
 
 
+def notify(s, driver_chat, monitor_text, driver_text, tag, dry_run):
+    """Deliver one alert according to ALERT_MODE. Returns True if something was sent."""
+    tag_line = f"\n🔔 {html.escape(s.monitor_tags)}" if tag and s.monitor_tags else ""
+    if s.alert_mode == "driver_groups":
+        # One message in the driver's group (monitoring team is a member there and gets tagged)
+        if driver_chat:
+            send_telegram(s, (driver_text or monitor_text) + tag_line, dry_run, chat_id=driver_chat)
+            return True
+        if s.telegram_chat_id:   # truck has no linked group yet -> fallback group
+            send_telegram(s, monitor_text + tag_line, dry_run)
+            return True
+        return False
+    # "separate": tagged details to the monitoring group, plain message to the driver group
+    if s.telegram_chat_id:
+        send_telegram(s, monitor_text + tag_line, dry_run)
+    if driver_text and driver_chat and s.driver_alerts:
+        send_telegram(s, driver_text, dry_run, chat_id=driver_chat)
+    return True
+
+
 def check_once(s, state, trucks, dry_run=False, now=None):
     from hv_loads import hv_check
 
     now = now or datetime.now(timezone.utc)
     alerts = state.setdefault("trucks", {})
-    chats = driver_chats(state) if s.driver_alerts else {}
+    chats = driver_chats(state)
     sent = 0
     for truck in trucks:
         if not isinstance(truck["located_at"], datetime):
@@ -324,12 +348,9 @@ def check_once(s, state, trucks, dry_run=False, now=None):
         for kind, text, driver_text in hv_msgs:
             if truck["driver"]:
                 text += f"\n👤 {html.escape(truck['driver'])}"
-            if kind == "tag" and s.monitor_tags:
-                text += f"\n🔔 {html.escape(s.monitor_tags)}"
-            send_telegram(s, text, dry_run)
-            if driver_text and driver_chat:
-                send_telegram(s, driver_text, dry_run, chat_id=driver_chat)
-            sent += 1
+            if driver_text:
+                driver_text = f"<b>Unit {html.escape(unit)} · HV</b>\n" + driver_text
+            sent += notify(s, driver_chat, text, driver_text, kind == "tag", dry_run)
 
         if truck["fuel"] is None:
             continue
@@ -339,20 +360,20 @@ def check_once(s, state, trucks, dry_run=False, now=None):
         # Refueled: reset and say so (only if we had alerted before)
         if truck["fuel"] >= s.reset:
             if prev["level"] != "none":
-                send_telegram(s, f"✅ Unit {html.escape(unit)} refueled – now {truck['fuel']:.0f}%", dry_run)
-                sent += 1
+                msg = f"✅ Unit {html.escape(unit)} refueled – now {truck['fuel']:.0f}%"
+                sent += notify(s, driver_chat, msg, msg if s.alert_mode == "driver_groups" else None,
+                               False, dry_run)
             alerts.pop(unit, None)
             continue
 
         new_level = LEVELS[level] > LEVELS[prev["level"]]
         remind = level == "critical" and now.timestamp() - prev["last_alert"] >= s.remind_minutes * 60
         if new_level or remind:
-            send_telegram(s, build_message(s, truck, level, reminder=not new_level, nonstop=nonstop), dry_run)
-            if driver_chat:
-                send_telegram(s, build_driver_message(s, truck, level, nonstop=nonstop), dry_run,
-                              chat_id=driver_chat)
+            sent += notify(s, driver_chat,
+                           build_message(s, truck, level, reminder=not new_level, nonstop=nonstop),
+                           build_driver_message(s, truck, level, nonstop=nonstop),
+                           level in ("tag", "critical"), dry_run)
             alerts[unit] = {"level": level, "last_alert": now.timestamp()}
-            sent += 1
     return sent
 
 
@@ -438,8 +459,10 @@ def main():
         return get_chat_id(s)
     if args.test_telegram:
         return test_telegram(s)
-    if not args.dry_run and not (s.telegram_token and s.telegram_chat_id):
-        raise SystemExit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID (or use --dry-run).")
+    if not args.dry_run and not s.telegram_token:
+        raise SystemExit("Set TELEGRAM_BOT_TOKEN (or use --dry-run).")
+    if not args.dry_run and s.alert_mode == "separate" and not s.telegram_chat_id:
+        raise SystemExit("ALERT_MODE=separate needs TELEGRAM_CHAT_ID (the monitoring group).")
 
     while True:
         try:

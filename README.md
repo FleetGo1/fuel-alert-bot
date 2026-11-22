@@ -58,8 +58,14 @@ For an HV load:
 Miles are counted from the truck's GPS every check. The shipper address is located with the free
 US Census address lookup (if the address can't be found, the ZIP code is used).
 
-### Messages to drivers
-Every alert also goes to the **driver's own group**, written for the driver (no tags, no internal links):
+### Where alerts go
+By default (`ALERT_MODE=driver_groups`) every alert is **one message in that driver's own group**.
+The monitoring team is a member of each driver group and is **tagged** (`MONITOR_TAGS`) at 30%, 25%
+and on HV problems. No separate monitoring group is needed; `TELEGRAM_CHAT_ID` is only a fallback
+for trucks whose group isn't linked yet. (`ALERT_MODE=separate` sends tagged alerts to a monitoring
+group instead and a plain message to the driver.)
+
+### Messages in the driver group
 
 | Situation | Driver sees |
 |---|---|
