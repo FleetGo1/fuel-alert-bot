@@ -53,7 +53,7 @@ jobs:
           FLEETGO_URL: ${{ vars.FLEETGO_URL }}
           FLEETGO_COMPANY_ID: ${{ vars.FLEETGO_COMPANY_ID }}
           IGNORE_UNITS: ${{ vars.IGNORE_UNITS }}
-        run: python fuel_alert_bot.py --loop --max-minutes 330
+        run: python -u fuel_alert_bot.py --loop --max-minutes 330   # -u = show each check in the log right away
 
       - name: Save alert memory
         if: always()
