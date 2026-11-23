@@ -80,8 +80,17 @@ For an HV load:
 Miles are counted from the truck's GPS every check. The shipper address is located with the free
 US Census address lookup (if the address can't be found, the ZIP code is used).
 
-### Where alerts go
-By default (`ALERT_MODE=driver_groups`) every alert is **one message in that driver's own group**.
+### Where alerts go (default: `ALERT_MODE=central`)
+| Alert | Goes to |
+|---|---|
+| Low fuel (all trucks), black state ahead, possible theft, refueled | **One fuel group** (`FUEL_ALERT_CHAT_ID`, or `TELEGRAM_CHAT_ID`) |
+| HV load (fuel before pickup, 300 mi nonstop, stopped) | **Driver's group** + a copy in the fuel group |
+
+Driver groups stay quiet otherwise; the bot only **reads** them (loads, HV, black-state tracking).
+After a fuel alert the bot stays quiet about that truck for **5 hours** (`ALERT_COOLDOWN_HOURS`) so the
+driver can reach the station that was given; if it is still low and not refueled, it alerts again.
+
+Older mode `ALERT_MODE=driver_groups`: every alert is **one message in that driver's own group**.
 The monitoring team is a member of each driver group and is **tagged** (`MONITOR_TAGS`) at 30%, 25%
 and on HV problems. No separate monitoring group is needed; `TELEGRAM_CHAT_ID` is only a fallback
 for trucks whose group isn't linked yet. (`ALERT_MODE=separate` sends tagged alerts to a monitoring

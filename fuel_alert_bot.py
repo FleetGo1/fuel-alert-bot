@@ -100,9 +100,15 @@ class Settings:
         # High-value loads (read from the drivers' Telegram groups)
         self.read_driver_groups = env("READ_DRIVER_GROUPS", "1") == "1"
         # Where alerts go:
-        #   driver_groups = one message in the driver's group, tagging MONITOR_TAGS there (default)
+        #   central       = all fuel/black-state/theft alerts to ONE fuel group; driver groups only
+        #                   get HV-load messages (default)
+        #   driver_groups = one message in each driver's group, tagging MONITOR_TAGS there
         #   separate      = tagged alert to TELEGRAM_CHAT_ID (monitoring group) + plain message to driver
-        self.alert_mode = env("ALERT_MODE", "driver_groups").lower()
+        self.alert_mode = env("ALERT_MODE", "central").lower()
+        # The fuel group for central mode (defaults to the monitoring group TELEGRAM_CHAT_ID)
+        self.fuel_chat_id = env("FUEL_ALERT_CHAT_ID") or self.telegram_chat_id
+        # After a fuel alert, stay quiet about that truck for this long (time to reach the station)
+        self.cooldown_hours = env_num("ALERT_COOLDOWN_HOURS", 5)
         # driver_groups mode: send alerts of trucks without a linked group to TELEGRAM_CHAT_ID?
         # Off by default - that group only gets theft alerts.
         self.fallback_to_monitoring = env("FALLBACK_TO_MONITORING", "0") == "1"
@@ -264,13 +270,15 @@ def build_message(s, truck, level, reminder=False, nonstop=None):
     e = html.escape
     fuel = f"{truck['fuel']:.0f}%"
     if level == "critical":
-        head = f"🔴 <b>URGENT{' (still low)' if reminder else ''}: Unit {e(truck['unit'])} – {fuel} fuel</b>"
+        head = f"🔴 <b>URGENT: Unit {e(truck['unit'])} – {fuel} fuel</b>"
     elif level == "tag":
         head = f"🟠 <b>Low fuel: Unit {e(truck['unit'])} – {fuel}</b>"
     else:
         head = f"🟡 Fuel watch: Unit {e(truck['unit'])} – {fuel}"
 
     lines = [head]
+    if reminder:
+        lines.append(f"⏰ <b>Still not refueled</b> – {s.cooldown_hours:.0f} h since the last alert.")
     if truck["driver"]:
         lines.append(f"👤 {e(truck['driver'])}")
     lines.append(f"📍 {e(truck['place'])}")
@@ -280,7 +288,6 @@ def build_message(s, truck, level, reminder=False, nonstop=None):
     if nonstop:
         lines.append(f"🛑 HV load: NO STOP – about {nonstop['miles_left']:.0f} mi of nonstop driving left. "
                      f"Fuel only after that.")
-    lines.append(f"💳 Fuel card discount: {e(s.fuel_card_chains)}")
     if truck["lat"] is not None and truck["lon"] is not None and not nonstop:
         lines.append(f'⛽ <a href="{e(planner_link(s, truck))}">Plan fuel from here</a>')
     return "\n".join(lines)
@@ -372,13 +379,24 @@ def save_state(path, state):
         json.dump(state, f, indent=1)
 
 
-def notify(s, driver_chat, monitor_text, driver_text, tag, dry_run, private=False):
+def notify(s, driver_chat, monitor_text, driver_text, tag, dry_run, private=False, hv=False):
     """Deliver one alert according to ALERT_MODE. Returns True if something was sent.
 
-    private=True (theft alerts): goes to the monitoring group if TELEGRAM_CHAT_ID is set,
-    otherwise to the driver group (the only place the monitoring team is).
+    central (default): every fuel / black-state / theft alert goes to ONE fuel group
+        (FUEL_ALERT_CHAT_ID, or TELEGRAM_CHAT_ID). Driver groups stay quiet, except
+        HV-load messages (hv=True), which go to the driver's group plus a copy to the fuel group.
+    private=True (theft alerts): never to the driver group if a monitoring group is set.
     """
     tag_line = f"\n🔔 {html.escape(s.monitor_tags)}" if tag and s.monitor_tags else ""
+    if s.alert_mode == "central":
+        sent = False
+        if hv and driver_text and driver_chat:
+            send_telegram(s, driver_text + tag_line, dry_run, chat_id=driver_chat)
+            sent = True
+        if s.fuel_chat_id:
+            send_telegram(s, monitor_text + tag_line, dry_run, chat_id=s.fuel_chat_id)
+            sent = True
+        return sent
     if private and s.telegram_chat_id:
         send_telegram(s, monitor_text + tag_line, dry_run)
         return True
@@ -448,7 +466,7 @@ def check_once(s, state, trucks, dry_run=False, now=None):
                 text += f"\n👤 {html.escape(truck['driver'])}"
             if driver_text:
                 driver_text = f"<b>Unit {html.escape(unit)} · HV</b>\n" + driver_text
-            sent += notify(s, driver_chat, text, driver_text, kind == "tag", dry_run)
+            sent += notify(s, driver_chat, text, driver_text, kind == "tag", dry_run, hv=True)
 
         if truck["fuel"] is None or not fuel_ok:
             continue
@@ -464,11 +482,21 @@ def check_once(s, state, trucks, dry_run=False, now=None):
             alerts.pop(unit, None)
             continue
 
-        new_level = LEVELS[level] > LEVELS[prev["level"]]
-        remind = level == "critical" and now.timestamp() - prev["last_alert"] >= s.remind_minutes * 60
-        if new_level or remind:
+        if level == "none":
+            continue
+        if s.cooldown_hours > 0:
+            # One alert per truck, then quiet for ALERT_COOLDOWN_HOURS (time to reach the fuel
+            # station that was given). Still low after that and not refueled -> alert again.
+            first = prev["level"] == "none"
+            due = first or now.timestamp() - prev["last_alert"] >= s.cooldown_hours * 3600
+            reminder = not first
+        else:   # old behaviour: alert on each new level, URGENT repeats every REMIND_MINUTES
+            due = LEVELS[level] > LEVELS[prev["level"]] or (
+                level == "critical" and now.timestamp() - prev["last_alert"] >= s.remind_minutes * 60)
+            reminder = LEVELS[level] <= LEVELS[prev["level"]]
+        if due:
             delivered = notify(s, driver_chat,
-                               build_message(s, truck, level, reminder=not new_level, nonstop=nonstop),
+                               build_message(s, truck, level, reminder=reminder, nonstop=nonstop),
                                build_driver_message(s, truck, level, nonstop=nonstop),
                                level in ("tag", "critical"), dry_run)
             if delivered:   # only remember alerts that actually went somewhere
