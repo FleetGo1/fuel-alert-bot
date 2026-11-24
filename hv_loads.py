@@ -140,6 +140,15 @@ def driver_type(text):
     return value if value in ("C/D", "O/O", "L/O") else None
 
 
+def name_from_title(title, unit):
+    """'2304 SCOTTY MARSEILLE (C/D)' -> 'SCOTTY MARSEILLE'."""
+    name = re.sub(r"\(?\s*\b[CLO]\s*/\s*[DO]\b\s*\)?", " ", title or "", flags=re.I)   # driver type
+    if unit:
+        name = re.sub(rf"(?i)\b(unit\s*#?\s*)?{re.escape(unit)}\b", " ", name)          # unit number
+    name = re.sub(r"[\s\-–|:#,]+", " ", name).strip()
+    return name or None
+
+
 def unit_for_group(title, units):
     """Find a fleet unit number inside a group title, e.g. 'Unit 2304 - Scotty' -> '2304'."""
     tokens = re.findall(r"[A-Za-z]?\d+", title or "")
@@ -174,6 +183,7 @@ def process_messages(s, state, messages, units, geocoder=geocode):
         if not unit:
             continue
         g["unit"] = unit
+        g["name"] = name_from_title(m["title"], unit)
 
         trip = parse_trip(text)
         if trip:

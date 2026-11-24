@@ -107,6 +107,9 @@ class Settings:
         self.alert_mode = env("ALERT_MODE", "central").lower()
         # The fuel group for central mode (defaults to the monitoring group TELEGRAM_CHAT_ID)
         self.fuel_chat_id = env("FUEL_ALERT_CHAT_ID") or self.telegram_chat_id
+        # central mode: also post HV-load messages in the driver's group? Off: the bot never
+        # writes in driver groups, it only reads them; everything goes to the fuel group.
+        self.hv_to_driver_group = env("HV_TO_DRIVER_GROUP", "0") == "1"
         # After a fuel alert, stay quiet about that truck for this long (time to reach the station)
         self.cooldown_hours = env_num("ALERT_COOLDOWN_HOURS", 5)
         # driver_groups mode: send alerts of trucks without a linked group to TELEGRAM_CHAT_ID?
@@ -134,8 +137,9 @@ class Settings:
         # Driver types that get fuel alerts (low fuel, black state, theft). From the group name:
         # (C/D) company driver, (O/O) owner-operator, (L/O) lease operator.
         self.fuel_alert_types = {t.strip().upper() for t in env("FUEL_ALERT_TYPES", "C/D").split(",") if t.strip()}
-        # Groups with no type in the name: still alert (1) so no truck is missed, or skip (0)
-        self.alert_unknown_type = env("ALERT_UNKNOWN_TYPE", "1") == "1"
+        # Trucks whose type is unknown (no driver group, or no (C/D) in its name): skip (0, default)
+        # so lease / owner-operator trucks never get fuel alerts by mistake; 1 = alert them too
+        self.alert_unknown_type = env("ALERT_UNKNOWN_TYPE", "0") == "1"
 
         # Sudden fuel drop (possible theft): % points lost beyond what driving explains
         self.theft_drop_pct = env_num("THEFT_DROP_PERCENT", 10)
@@ -279,8 +283,9 @@ def build_message(s, truck, level, reminder=False, nonstop=None):
     lines = [head]
     if reminder:
         lines.append(f"⏰ <b>Still not refueled</b> – {s.cooldown_hours:.0f} h since the last alert.")
-    if truck["driver"]:
-        lines.append(f"👤 {e(truck['driver'])}")
+    who = " · ".join(x for x in (truck.get("driver"), truck.get("type")) if x)
+    if who:
+        lines.append(f"👤 {e(who)}")
     lines.append(f"📍 {e(truck['place'])}")
     lines.append(range_line(s, truck["fuel"], truck.get("mpg")))
     if truck["state"] in s.never_fuel_states:
@@ -345,6 +350,11 @@ def driver_chats(state):
     return {g["unit"]: cid for cid, g in state.get("groups", {}).items() if g.get("unit")}
 
 
+def driver_names(state):
+    """unit -> driver name taken from the group name ('2304 SCOTTY MARSEILLE (C/D)')."""
+    return {g["unit"]: g["name"] for g in state.get("groups", {}).values() if g.get("unit") and g.get("name")}
+
+
 def driver_types(state):
     """unit -> 'C/D' / 'O/O' / 'L/O' (from the group name), when known."""
     return {g["unit"]: g["type"] for g in state.get("groups", {}).values() if g.get("unit") and g.get("type")}
@@ -382,15 +392,15 @@ def save_state(path, state):
 def notify(s, driver_chat, monitor_text, driver_text, tag, dry_run, private=False, hv=False):
     """Deliver one alert according to ALERT_MODE. Returns True if something was sent.
 
-    central (default): every fuel / black-state / theft alert goes to ONE fuel group
-        (FUEL_ALERT_CHAT_ID, or TELEGRAM_CHAT_ID). Driver groups stay quiet, except
-        HV-load messages (hv=True), which go to the driver's group plus a copy to the fuel group.
+    central (default): every alert (fuel, black state, theft, HV load) goes to ONE fuel group
+        (FUEL_ALERT_CHAT_ID, or TELEGRAM_CHAT_ID). The bot never writes in driver groups
+        (unless HV_TO_DRIVER_GROUP=1, then HV messages also go to the driver's group).
     private=True (theft alerts): never to the driver group if a monitoring group is set.
     """
     tag_line = f"\n🔔 {html.escape(s.monitor_tags)}" if tag and s.monitor_tags else ""
     if s.alert_mode == "central":
         sent = False
-        if hv and driver_text and driver_chat:
+        if hv and driver_text and driver_chat and s.hv_to_driver_group:
             send_telegram(s, driver_text + tag_line, dry_run, chat_id=driver_chat)
             sent = True
         if s.fuel_chat_id:
@@ -427,6 +437,7 @@ def check_once(s, state, trucks, dry_run=False, now=None):
     alerts = state.setdefault("trucks", {})
     chats = driver_chats(state)
     types = driver_types(state)
+    names = driver_names(state)
     sent = 0
     for truck in trucks:
         if not isinstance(truck["located_at"], datetime):
@@ -438,32 +449,34 @@ def check_once(s, state, trucks, dry_run=False, now=None):
             continue  # GPS/fuel data too old to trust
 
         driver_chat = chats.get(unit)
+        # Driver name + type from the Telegram group name ("2304 SCOTTY MARSEILLE (C/D)")
+        truck["driver"] = names.get(unit) or truck["driver"]
+        truck["type"] = types.get(unit)
+        who = " · ".join(x for x in (truck["driver"], truck["type"]) if x)
+        who_line = f"\n👤 {html.escape(who)}" if who else ""
         # Fuel alerts only for company drivers (C/D); O/O and L/O buy their own fuel.
         # Checks still run for everyone so their data stays current.
-        fuel_ok = fuel_alerts_for(s, types.get(unit))
+        fuel_ok = fuel_alerts_for(s, truck["type"])
 
         # This truck's real MPG, learned from its own miles and fuel use
         truck["mpg"] = learn_mpg(s, state, truck, now.timestamp())
 
         # Sudden fuel drop that driving can't explain -> possible theft
         for kind, text, _ in theft_check(s, state, truck, now.timestamp()):
-            if truck["driver"]:
-                text += f"\n👤 {html.escape(truck['driver'])}"
+            text += who_line
             if fuel_ok:
                 sent += notify(s, driver_chat, text, None, True, dry_run, private=True)
 
         # Black state ahead on the current load -> fuel before entering
         for kind, text, driver_text in trip_check(s, state, truck, now.timestamp()):
-            if truck["driver"]:
-                text += f"\n👤 {html.escape(truck['driver'])}"
+            text += who_line
             if fuel_ok:
                 sent += notify(s, driver_chat, text, driver_text, kind == "tag", dry_run)
 
         # High-value load rules (75% before pickup, 300 mi nonstop after)
         hv_msgs, nonstop = hv_check(s, state, truck, now.timestamp())
         for kind, text, driver_text in hv_msgs:
-            if truck["driver"]:
-                text += f"\n👤 {html.escape(truck['driver'])}"
+            text += who_line
             if driver_text:
                 driver_text = f"<b>Unit {html.escape(unit)} · HV</b>\n" + driver_text
             sent += notify(s, driver_chat, text, driver_text, kind == "tag", dry_run, hv=True)
@@ -527,9 +540,13 @@ def run(s, args):
     sent = check_once(s, state, trucks, dry_run=args.dry_run)
     save_state(s.state_file, state)
     linked = len(driver_chats(state))
+    by_type = {}
+    for t in driver_types(state).values():
+        by_type[t] = by_type.get(t, 0) + 1
     token_ok = bool(s.telegram_token and re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{30,}", s.telegram_token))
     print(f"Telegram token format: {'OK' if token_ok else 'NOT RECOGNIZED - re-paste the secret'} | "
-          f"driver groups linked: {linked}")
+          f"driver groups linked: {linked} (C/D: {by_type.get('C/D', 0)}, O/O: {by_type.get('O/O', 0)}, "
+          f"L/O: {by_type.get('L/O', 0)}, no type: {linked - sum(by_type.values())})")
     # Keep logs free of unit/driver details (logs may be public on GitHub).
     print(f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC: checked {len(trucks)} trucks, sent {sent} alert(s)")
 

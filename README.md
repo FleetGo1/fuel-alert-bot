@@ -21,9 +21,11 @@ and "fuel within" keeps a 10% reserve on top of that and a ⛔ warning when the 
 ### Company drivers only
 Fuel alerts (low fuel, black state, theft) go only to **company drivers**. The bot reads the driver
 type from the group name: `(C/D)` company driver, `(O/O)` owner-operator, `(L/O)` lease operator,
-e.g. "2304 Scotty (C/D)". You can also type `/unit 2304 C/D` in the group. O/O and L/O groups get
-no fuel alerts (they buy their own fuel) but still get HV load rules. Groups with no type in the
-name still get fuel alerts, so no truck is missed (`ALERT_UNKNOWN_TYPE=0` turns that off).
+e.g. "2304 SCOTTY MARSEILLE (C/D)" (the driver's name in alerts is also taken from the group name).
+You can also type `/unit 2304 C/D` in the group. **Only (C/D) trucks get fuel alerts** (low fuel,
+black state, theft). O/O, L/O, groups with no type and trucks with no group get none, so nobody acts
+on a lease/owner-operator alert by mistake (`ALERT_UNKNOWN_TYPE=1` would alert unknown trucks too).
+HV load alerts are sent for all drivers. The log shows how many C/D / O/O / L/O groups are linked.
 
 ### Possible fuel theft
 Every check compares the fuel drop with the miles actually driven (1 gal ≈ 6.5 mi). If fuel fell
@@ -84,9 +86,10 @@ US Census address lookup (if the address can't be found, the ZIP code is used).
 | Alert | Goes to |
 |---|---|
 | Low fuel (all trucks), black state ahead, possible theft, refueled | **One fuel group** (`FUEL_ALERT_CHAT_ID`, or `TELEGRAM_CHAT_ID`) |
-| HV load (fuel before pickup, 300 mi nonstop, stopped) | **Driver's group** + a copy in the fuel group |
+| HV load (fuel before pickup, 300 mi nonstop, stopped) | **Same fuel group** |
 
-Driver groups stay quiet otherwise; the bot only **reads** them (loads, HV, black-state tracking).
+The bot **never writes in driver groups**; it only **reads** them (loads, HV, black-state tracking).
+(`HV_TO_DRIVER_GROUP=1` would also post HV messages in the driver's group - off by default.)
 After a fuel alert the bot stays quiet about that truck for **5 hours** (`ALERT_COOLDOWN_HOURS`) so the
 driver can reach the station that was given; if it is still low and not refueled, it alerts again.
 
